@@ -120,35 +120,6 @@ def send_test_dns_query(server_ip: str, keyword: str):
 
 
 
-def build_rr(rec, zone):
-    ttl = rec["ttl"] or zone["ttl"]
-    name = rec["name"]
-    t = rec["type"]
-    if t == "A":
-        return RR(name, QTYPE.A, rdata=A(rec["content"]), ttl=ttl)
-    if t == "AAAA":
-        return RR(name, QTYPE.AAAA, rdata=AAAA(rec["content"]), ttl=ttl)
-    if t == "CNAME":
-        target = rec["content"].rstrip(".") + "."
-        return RR(name, QTYPE.CNAME, rdata=CNAME(target), ttl=ttl)
-    if t == "MX":
-        prio = rec["priority"] or 10
-        target = rec["content"].rstrip(".") + "."
-        return RR(name, QTYPE.MX, rdata=MX(target, prio), ttl=ttl)
-    if t == "NS":
-        target = rec["content"].rstrip(".") + "."
-        return RR(name, QTYPE.NS, rdata=NS(target), ttl=ttl)
-    if t == "TXT":
-        return RR(name, QTYPE.TXT, rdata=TXT(rec["content"]), ttl=ttl)
-    if t == "SRV":
-        parts = rec["content"].split()
-        if len(parts) != 4:
-            return None
-        priority, weight, port, target = parts
-        target = target.rstrip(".") + "."
-        return RR(name, QTYPE.SRV, rdata=SRV(int(priority), int(weight), int(port), target), ttl=ttl)
-    return None
-
 class DNSServerThread(threading.Thread):
     def __init__(self, db_path):
         super().__init__()
